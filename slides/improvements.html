@@ -1,0 +1,42 @@
+<section>
+    <h1>Améliorer le process ?</h1>
+    <img src="resources/img/automate.jpg" alt="">
+</section>
+<section>
+    <h2>Makefile</h2>
+    <pre><code class="hljs Makefile">COMPOSE=docker-compose
+CONTAINERS=mongo nginx redis maildev workspace
+
+env: ## Copy env file
+	cp env-example .env
+
+install: ## Install containers and then install application
+	cp env-example .env
+	$(COMPOSE) up -d --build $(CONTAINERS)
+	$(COMPOSE) exec --user=laradock workspace make install
+
+bash: ## Open bash shell on workspace container
+	$(COMPOSE) exec --user=laradock workspace bash
+
+up: ## Up containers
+	$(COMPOSE) up -d $(CONTAINERS)
+
+down: ## Down containers
+	$(COMPOSE) down</code></pre>
+</section>
+<section>
+    <pre><code class="hljs Makefile">rebuild: ## Rebuild containers
+    $(COMPOSE) up -d --build --force-recreate $(CONTAINERS)
+
+start: ## Start containers
+    $(COMPOSE) start -d $(CONTAINERS)
+
+stop: ## Stop containers
+    $(COMPOSE) stop $(CONTAINERS)
+
+.PHONY: help env install install-dev bash up down rebuild start stop restart refresh-compose</code></pre>
+</section>
+<section>
+    <h2>Inclure dans le projet</h2>
+    <pre><code class="hljs bash">pitchart@inside:project/path/$ git submodule add [url-fork-laradock]</code></pre>
+</section>
