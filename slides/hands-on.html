@@ -1,0 +1,251 @@
+<section>
+    <h2>Et concrètement ?</h2>
+    <h3>Quelques exemples dans Symfony</h3>
+</section>
+<section>
+    <h3>Étape 1 : modéliser le domaine</h3>
+    <h4>DomainBundle</h4>
+    <ul class="fragment">
+        <li>Les tests unitaires sont la seule interface possible pour le moment</li>
+        <li class="fragment">Réduire l'impacte de dépendances externes</li>
+        <li class="fragment">Pas de problématique de formats nécessaires</li>
+    </ul>
+    <p class="fragment solution">Bonus : permet d'obtenir des données valides pour les suites des tests</p>
+</section>
+<section>
+    <h4>Pour les entités</h4>
+    <ul class="fragment">
+        <li>Banir les anotations : pas de dépendance réelle <span class="focus">mais</span> dépendances obligatoires en cas d'accès</li>
+        <li class="fragment">Traiter les erreurs de validation sous forme d'exceptions propres au domaine</li>
+        <li class="fragment">Ne pas construire le domaine sous des problématiques de persistance</li>
+        <li class="fragment">Getters ? <del class="fragment">Setters ?</del></li>
+    </ul>
+    <p class="fragment solution">
+        <span class="focus">Property Mapping :</span> Doctrine n'a pas besoin de getters, ni de setters <br>
+    </p>
+</section>
+<section>
+    <h4>DDD Repository != ORM Repository</h4>
+    <ul class="fragment">
+        <li>Pas de requête orientée SQL (SELECT)</li>
+        <li class="fragment">Possibilité d'être interchangeable (interface uniquement ?)</li>
+    </ul>
+    <pre class="fragment"><code class="hljs php">interface ContactRepository
+{
+    public function newIdentifier(): Identifier;
+    public function add(Contact $contact): iterable&lt;Contact&gt;; // missing generics
+    public function get(Identifier $identifier): Contact;
+    public function remove(Identifier $identifier);
+}</code></pre>
+</section>
+<section>
+    <h3>Étape 2 : créer les cas d'utilisation</h3>
+    <h4>ApplicationBundle</h4>
+    <p class="fragment"><span class="focus">Command pattern :</span><br> Request => Controller => Form => Command => CommandHandler => Domain <span class="fragment">(=> Event(s) => ...)</span></p>
+    <p class="fragment"><span class="focus">Query pattern :</span><br> Request => Controller => Parameters Converter => Query => DTO</p>
+</section>
+<section>
+    <h3>CommandHandler ?</h3>
+    <pre><code class="hljs php">interface CommandHandler
+{
+    public function supports(Command $command): bool;
+    public function handle(Command $command) // : void ?;
+}</code></pre>
+</section>
+<section>
+    <h3>Command Bus ???</h3>
+    <blockquote class="fragment">A <strong>Command Bus</strong> accepts a <strong>Command</strong> object and delegates it to a <strong>Command Handler</strong></blockquote>
+    <pre class="fragment"><code class="hljs bash">composer require simple-bus/message-bus
+# or
+composer require broadway/broadway-bundle</code></pre>
+</section>
+<section>
+    <h3>Query ?</h3>
+    <pre><code class="hljs php">interface Searcher
+{
+    public function search(ParamFetcher $paramFetcher): iterable;
+    public function count(ParamFetcher $paramFetcher): int;
+}</code></pre>
+</section>
+<section>
+    <pre><code class="hljs php">class ContactSearcher {
+    public function __construct(
+        Filterer $filterer, Specification $specification,
+        Executor $executor, Transformer $transformer
+    ) { ... }
+
+    /** @return ContactListDto[] */
+    public function search(ParamFetcher $paramFetcher) {
+        $query = $this->createQuery();
+        $this->filter($query, $paramFetcher);
+        $this->sort($query, $paramFetcher);
+        $this->paginate($query, $paramFetcher);
+        $results = $this->executor->execute($query);
+        return array_map([$this->transformer, 'transform'], $results);
+    }
+}</code></pre>
+</section>
+<section>
+    <h3>Doctrine repository searcher</h3>
+    <pre><code class="hljs php">class ActivitySearcher extends AbstractSearcher implements Searcher
+{
+    public function createQuery(ParamFetcher $paramFetcher)
+    {
+        /** @var EntityManagerInterface $entityManager */
+        $entityManager = $this->executor->getConcreteExecutor();
+
+        $periodBeginDate = new \DateTime('first day of ' . $paramFetcher->get('period'));
+        $periodEndDate = new \DateTime('last day of ' . $paramFetcher->get('period'));
+
+        return $entityManager->getRepository(Activity::class)
+            ->createQueryBuilder('activity')
+            ->join('activity.purchaseOrder', 'purchaseOrder')
+            ->join('purchaseOrder.project', 'project')
+            ->join('project.business', 'business')
+            ->where('project.status = :projectStatus')
+            ->andWhere('purchaseOrder.status = :purchaseOrderStatus')
+            ->andWhere('project.visibility = true')
+            ->andWhere('project.endDate >= :periodBeginDate')
+            ->andWhere('project.beginDate <= :periodEndDate')
+            ->setParameter('projectStatus', ProjectStatus::ACTIVE)
+            ->setParameter('purchaseOrderStatus', PurchaseOrderStatus::ACTIVE)
+            ->setParameter('periodBeginDate', $periodBeginDate)
+            ->setParameter('periodEndDate', $periodEndDate)
+            ->addSelect('purchaseOrder')
+            ->addSelect('project')
+            ->addSelect('business')
+        ;
+    }</code></pre>
+</section>
+<section>
+    <h3>Doctrine to DTO Searcher</h3>
+    <pre><code class="hljs php">final class CitySearcher extends AbstractSearcher
+{
+    public function createQuery(ParamFetcher $paramFetcher = null)
+    {
+        /** @var EntityManagerInterface $entityManager */
+        $entityManager = $this->executor->getConcreteExecutor();
+        return $entityManager->createQueryBuilder()
+            ->select(
+                sprintf('NEW %s(c.codeInsee, c.zip, c.city)',
+                \App\Application\UseCase\Query\Dto\City::class))
+            ->distinct()
+            ->from(Agency::class, 'a')
+            ->innerJoin('a.sectors', 's')
+            ->innerJoin('s.catchmentArea', 'c')
+        ;
+    }
+}</code></pre>
+</section>
+<section>
+    <h3>Doctrine Raw SQL Searcher</h3>
+    <pre><code class="hljs php">final class ActivityReportSearcher extends AbstractSearcher implements Searcher
+{
+    public function __construct(Filterer $filterer, RulerZ $rulerz, DoctrineRawSQL $executor, ActivityReportDailyActivityDoctrineToObject $transformator)
+    {
+        $executor->setAlias('list');
+        // ...
+    }
+
+    public function createQuery(...)
+    {
+        return 'select * from (
+            select
+                project.external_code as project_external_code, project.name as project_name, project.slug as project_slug, assistant.name as office_assistant, icus.name as invoiced_customer, fcus.name as final_customer,
+                dap.period, dap.nb_days, dap.collaborators, dap.collaborators_json, dap.collaborators_times, dap.purchase_order_slug, dap.purchase_order_reference, bill.slug as bill_slug,
+                (case when nb_charged > 0 then \''.DailyActivityStatus::CHARGED.'\' when nb_declared = nb_daily_activity then \''.DailyActivityStatus::DECLARED.'\' when nb_validated = nb_daily_activity then \''.DailyActivityStatus::VALIDATED.'\' else \'\' end) as status,
+                (case when (nb_validated = nb_daily_activity or nb_declared = nb_daily_activity) then 100 when (dap.nb_charged + dap.nb_declared) > 0 then round((dap.nb_charged * 100 / (dap.nb_charged + dap.nb_declared)), 2) else 0 end) as progression
+            from (
+                select
+                    p.id as project_id, po.id as purchase_order_id, to_char(da.date, \'YYYY-MM\') as period,
+                    po.reference as purchase_order_reference, po.slug as purchase_order_slug,
+                    count(da.id) filter (where da.status = \''.DailyActivityStatus::DECLARED.'\')  as nb_declared,
+                    count(da.id) filter (where da.status = \''.DailyActivityStatus::CHARGED.'\')   as nb_charged,
+                    count(da.id) filter (where da.status = \''.DailyActivityStatus::VALIDATED.'\') as nb_validated,
+                    count(da.id) as nb_daily_activity,
+                    coalesce((sum(da.days) filter (where da.status = \''.DailyActivityStatus::CHARGED.'\' or da.status = \''.DailyActivityStatus::VALIDATED.'\')), 0) as nb_days,
+                    string_agg(concat_ws(\' \', c.firstname, c.lastname), \',\') as collaborators,
+                    array_to_json(array_agg(distinct c)) as collaborators_json,
+                    string_agg(concat_ws(\':\', c.id, da.days, da.status), \',\') as collaborators_times
+                from daily_activity da
+                join activity as a on da.id_activity = a.id
+                join purchase_order as po on a.id_purchase_order = po.id
+                join project p on po.id_project = p.id
+                join contact c on c.id = da.id_collaborator
+                where (da.discr = \''.DailyActivity::CHARGE.'\' or da.discr = \''.DailyActivity::OVERTIME_CHARGE.'\') and (da.status = \''.DailyActivityStatus::DECLARED.'\' or da.status = \''.DailyActivityStatus::CHARGED.'\' or da.status = \''.DailyActivityStatus::VALIDATED.'\')
+                and po.status = \''.PurchaseOrderStatus::ACTIVE.'\'
+                group by p.id, po.id, po.slug, po.reference, period
+            ) as dap
+            join project on project.id = dap.project_id
+            join contact icus on icus.id = project.id_invoiced_customer
+            join contact fcus on fcus.id = project.id_final_customer
+            join contact assistant on assistant.id = project.id_office_assistant
+            left join bill on bill.id_purchase_order = dap.purchase_order_id and bill.period = dap.period and bill.discr = \''.Billing::BILL.'\' and bill.type = \''.BillType::CLIENT.'\'
+        ) as list'
+    ;
+    }</code></pre>
+</section>
+<section>
+    <h3>ElasticSearch to DTO searcher</h3>
+    <pre><code class="hljs php">final class LeaveInfoSearcher extends AbstractSearcher implements Searcher
+{
+    public function createQuery(ParamFetcher $paramFetcher)
+    {
+        /** @var Search $searcher */
+        $searcher = $this->executor->getConcreteExecutor();
+
+        $searcher->addType('collaborator_leave_info');
+
+        return $searcher;
+    }
+}</code></pre>
+</section>
+<section>
+    <h3>Specification pattern</h3>
+    <p class="fragment">Spécifications métiers explicitées, applicables à n'importe quel ensemble d'objets</p>
+    <ul class="fragment">
+        <li>Vérifier si un candidat correspond à la spécification</li>
+        <li class="fragment">Filtrer ou requêter un ensemble de candidats</li>
+    </ul>
+</section>
+<section>
+    <h3>Specification pattern</h3>
+    <p>Ex : Un nouvel employé est un employé actif arrivé il y a moins d'un mois</p>
+    <pre><code class="hljs php">$rule = 'active and hiredFrom < 1 month';</code></pre>
+    <div class="fragment"> Mieux :
+        <pre><code class="hljs php">$newEmployeSpecification = new Specification($rule);</code></pre>
+    </div>
+    <div class="fragment"> Mieux ++ :
+        <pre><code class="hljs php">Class NewEmployeSpecification extends Specification {
+    public function getRule() { return 'active and hiredFrom < 1 month'; }
+}</code></pre>
+    </div>
+    <p class="fragment solution"><a href="https://github.com/K-Phoen/rulerz">kphoen/rulerz</a></p>
+</section>
+<section>
+    <h3>Étape 3 : interfacer avec le framework</h3>
+    <h4>InfrastructureBundle</h4>
+    <ul class="fragment">
+        <li>Configuration (persistance, serialisation ...) en limitant les impactes sur le domaine</li>
+        <li class="fragment">Déclaration des services des couches domaine et application (Injection de dépendances)</li>
+        <li class="fragment">Externaliser la configuration ? (vendor/domaine + application/bundle)</li>
+    </ul>
+</section>
+<section>
+    <h4>CRUD ?</h4>
+    <p>Pour les objets simples, avec peu de propriétés, règles ... <br>
+        Ex : catégories, types, tags ...
+    </p>
+    <p class="fragment focus"><a href="http://jlhood.com/there-is-no-u-in-crud/">There is no U in CRUD</a></p>
+</section>
+<section>
+    <h4>Aggregats ?</h4>
+    <p class="fragment">Accès aux relations via leur agrégat</p>
+    <ul class="fragment">
+        <li>GET /employees/[identifier]/addresses => <strong class="focus">DTO</strong></li>
+        <li>GET /employees/[identifier]/addresses/[id]</li>
+        <li class="fragment">GET /employees/[identifier]/addresses/[type]</li>
+        <li class="fragment">POST /employees/[identifier]/addresses/[id]/move</li>
+        <li class="fragment">PATCH /employees/[identifier]/addresses/[id] => fix</li>
+    </ul>
+</section>
